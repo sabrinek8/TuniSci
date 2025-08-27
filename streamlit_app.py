@@ -8,6 +8,8 @@ from langchain.chains import RetrievalQA
 import os
 from dotenv import load_dotenv
 from pathlib import Path
+import plotly.express as px
+import plotly.graph_objects as go
 
 # Load from .env if exists
 load_dotenv()
@@ -155,11 +157,173 @@ def load_authors_data():
         author["rank"] = i + 1
     return pd.DataFrame(sorted_authors).set_index("rank")
 
+# Load research fields data
+@st.cache_data
+def load_research_fields_data():
+    try:
+        with open("research_fields_analysis.json", "r", encoding='utf-8') as file:
+            return json.load(file)
+    except FileNotFoundError:
+        st.warning("⚠️ Research fields analysis file not found. Please run the research fields extractor first.")
+        return None
+    except json.JSONDecodeError:
+        st.error("❌ Error reading research fields analysis file. Please check the file format.")
+        return None
+
+def display_research_fields_analysis():
+    st.header("🔬 Research Fields Analysis")
+    
+    # Load research fields data
+    fields_data = load_research_fields_data()    
+    field_stats = fields_data.get('research_fields_statistics', {})
+    
+    if not field_stats:
+        st.warning("No research fields data available.")
+        return
+    
+    # Summary metrics
+    col1, col2, col3, col4 = st.columns(4)
+    
+    with col1:
+        st.metric("Total Authors", fields_data.get('total_authors', 0))
+    
+    with col2:
+        st.metric("Unique Research Fields", fields_data.get('total_unique_fields', 0))
+    
+    with col3:
+        if fields_data.get('summary', {}).get('top_field_by_avg_h_index'):
+            top_field, top_stats = fields_data['summary']['top_field_by_avg_h_index']
+            st.metric("Highest Avg H-Index", f"{top_stats['average_h_index']}")
+        else:
+            st.metric("Highest Avg H-Index", "N/A")
+    
+    with col4:
+        if fields_data.get('summary', {}).get('most_popular_field'):
+            popular_field, popular_stats = fields_data['summary']['most_popular_field']
+            st.metric("Most Authors in Field", popular_stats['count'])
+        else:
+            st.metric("Most Authors in Field", "N/A")
+    
+    # Prepare DataFrame for display and visualization
+    df_data = []
+    for field, stats in field_stats.items():
+        df_data.append({
+            'Research Field': field,
+            'Authors Count': stats['count'],
+            'Avg H-Index': stats['average_h_index'],
+            'Avg i10-Index': stats['average_i10_index'],
+            'Max H-Index': stats['max_h_index'],
+            'Total H-Index': stats['total_h_index']
+        })
+    
+    df_fields = pd.DataFrame(df_data)
+    
+    # Tabs for different views
+    tab1, tab2, tab3 = st.tabs(["📊 Top Fields by H-Index", "👥 Most Popular Fields", "📈 Visualizations"])
+    
+    with tab1:
+        st.subheader("Top Research Fields by Average H-Index")
+        
+        # Filter options
+        col1, col2 = st.columns([1, 1])
+        with col1:
+            min_authors = st.slider("Minimum number of authors", 1, 50, 1, key="h_index_filter")
+        with col2:
+            top_n = st.slider("Show top N fields", 10, 50, 20, key="h_index_top_n")
+        
+        # Filter and display
+        filtered_df = df_fields[df_fields['Authors Count'] >= min_authors].head(top_n)
+        st.dataframe(
+            filtered_df,
+            use_container_width=True,
+            hide_index=True
+        )
+        
+        # Show details for selected field
+        if not filtered_df.empty:
+            selected_field = st.selectbox(
+                "Select a field to see authors details:",
+                options=filtered_df['Research Field'].tolist(),
+                key="field_details_selector"
+            )
+            
+            if selected_field and selected_field in field_stats:
+                field_info = field_stats[selected_field]
+                st.write(f"**Authors in {selected_field}:**")
+                
+                # Display authors in this field
+                authors_df = pd.DataFrame(field_info['authors'])
+                if not authors_df.empty:
+                    st.dataframe(authors_df, use_container_width=True, hide_index=True)
+    
+    with tab2:
+        st.subheader("Most Popular Research Fields")
+        
+        # Sort by author count
+        popular_df = df_fields.sort_values('Authors Count', ascending=False)
+        
+        col1, col2 = st.columns([1, 1])
+        with col1:
+            show_n_popular = st.slider("Show top N popular fields", 10, 50, 25, key="popular_top_n")
+        
+        # Display popular fields
+        st.dataframe(
+            popular_df.head(show_n_popular),
+            use_container_width=True,
+            hide_index=True
+        )
+    
+    with tab3:
+        st.subheader("Research Fields Visualizations")
+        
+        # Chart 1: Top fields by average h-index (bar chart)
+        top_fields_chart = df_fields.head(15)
+        
+        fig_bar = px.bar(
+            top_fields_chart,
+            x='Avg H-Index',
+            y='Research Field',
+            title='Top 15 Research Fields by Average H-Index',
+            orientation='h',
+            text='Avg H-Index',
+            color='Authors Count',
+            color_continuous_scale='viridis'
+        )
+        fig_bar.update_layout(height=600)
+        fig_bar.update_traces(texttemplate='%{text}', textposition='outside')
+        st.plotly_chart(fig_bar, use_container_width=True)
+        
+        # Chart 2: Authors count vs Average H-index (scatter plot)
+        fig_scatter = px.scatter(
+            df_fields,
+            x='Authors Count',
+            y='Avg H-Index',
+            title='Authors Count vs Average H-Index by Research Field',
+            hover_data=['Research Field', 'Max H-Index'],
+            size='Total H-Index',
+            color='Avg H-Index',
+            color_continuous_scale='plasma'
+        )
+        fig_scatter.update_layout(height=500)
+        st.plotly_chart(fig_scatter, use_container_width=True)
+        
+        # Chart 3: Top fields by total authors (pie chart)
+        top_popular = df_fields.nlargest(10, 'Authors Count')
+        
+        fig_pie = px.pie(
+            top_popular,
+            values='Authors Count',
+            names='Research Field',
+            title='Distribution of Top 10 Most Popular Research Fields'
+        )
+        fig_pie.update_layout(height=500)
+        st.plotly_chart(fig_pie, use_container_width=True)
+
 def main():
     st.title("TuniSci")
 
     # Tabs for different views
-    tab1, tab2 = st.tabs(["Author Table", "Chat"])
+    tab1, tab2, tab3 = st.tabs(["👥 Authors Table", "🔬 Research Fields", "💬 Chat"])
 
     with tab1:
         st.header("Authors H-Index Table in Tunisia")
@@ -168,6 +332,9 @@ def main():
         st.dataframe(df.head(1000))
 
     with tab2:
+        display_research_fields_analysis()
+
+    with tab3:
         st.header("Chat with TuniSci")
         
         # Add helpful information
